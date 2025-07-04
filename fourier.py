@@ -66,15 +66,34 @@ class PowerLinearModel(nn.Module):
         loss = squared_error + reg_lambda * l1_reg
         return loss
 
-def hadamard_matrix(n, device=None, dtype=None):
-    # Iterative construction of Hadamard matrix
-    if device is None:
-        device = torch.device("cpu")
-    H = torch.tensor([[1.0]], device=device, dtype=dtype)
-    for _ in range(int(torch.log2(torch.tensor(n)).item())):
-        H = torch.cat([torch.cat([H, H], dim=1),
-                     torch.cat([H, -H], dim=1)], dim=0)
-    return H
+def loss_max_fn(self, x, target, reg_lambda=5e-3):
+        """
+        Computes the loss as the sum of squared error between model output and target,
+        plus L1 regularization on all weights in all linear layers.
+
+            Args:
+                x: Input tensor.
+                target: Target tensor.
+                reg_lambda: Regularization strength (float).
+
+            Returns:
+                loss: Scalar tensor.
+        """
+        """
+            It appears that reg_lambda = (5e-3)*(2^k/8) seems to work well,
+            not sure, I have only checked a few runs.
+        """
+
+        output = self.forward(x)
+        squared_error = torch.sum((output - target) ** 2)
+        l1_reg = 0.0
+        for layer in self.layers:
+            l1_reg = max(l1_reg , torch.sum(torch.abs(layer.weight)))
+        loss = squared_error + reg_lambda * l1_reg
+        return loss
+
+
+
 
 def linear_transform_batch(batch_size, transform_matrix ,device=None, dtype=None):
     """
@@ -120,9 +139,7 @@ def print_model(model):
         if isinstance(module, torch.nn.Linear):
             print(f"Layer: {name}")
             print("Weight:")
-            print(module.weight.data)
-            print("-" * 40)
-            print(module.weight.grad)
+            print((module.weight.data / 1e-2).round() * 1e-2)
             print("-" * 40)
 
 
@@ -134,30 +151,73 @@ def validate_model(model, transform_matrix, batch_size, device=device):
     # Computing the errors 
     X, Y = linear_transform_batch(batch_size, transform_matrix, device=device, dtype=dtype)
     output = model.forward(X)
-    avg_squared_error = torch.sum((output - Y) ** 2)/(batch_size * transform_matrix.dim)
+    avg_squared_error = torch.sum((output - Y) ** 2)/(batch_size * model.dim)
     print(f"Average squared error: {avg_squared_error}")
 
     l1_reg = 0.0
     for layer in model.layers:
         l1_reg = l1_reg + torch.sum(torch.abs(layer.weight))
     # avg_l1_reg = l1_reg/((2**k)*L)
-    avg_l1_reg = l1_reg/(transform_matrix.dim * L)
+    avg_l1_reg = l1_reg/(transform_matrix.shape[1] * L)
 
-    print(f"Total L1 error: {l1_reg}")
+    print(f"Average L1 error: {avg_l1_reg}")
+
+
+# Constructing matrices
+def hadamard_matrix(n, device=None, dtype=None):
+    # Iterative construction of Hadamard matrix
+    if device is None:
+        device = torch.device("cpu")
+    H = torch.tensor([[1.0]], device=device, dtype=dtype)
+    for _ in range(int(torch.log2(torch.tensor(n)).item())):
+        H = torch.cat([torch.cat([H, H], dim=1),
+                     torch.cat([H, -H], dim=1)], dim=0)
+    return H
+
+def tensor_product(matrices):
+    """
+    Computes the tensor (Kronecker) product of a list of matrices.
+
+    Args:
+        matrices (list of torch.Tensor): List of 2D tensors.
+
+    Returns:
+        torch.Tensor: The tensor product of all matrices in the list.
+    """
+    if not matrices:
+        raise ValueError("Input list of matrices is empty.")
+    result = matrices[0]
+    for mat in matrices[1:]:
+        result = torch.kron(result, mat)
+    return result
+
 
  
 # Hyperparameters
-k = 3  # so 2^k = 8
-L = 3
-train_iterations = 1000000  # number of training iterations
+train_iterations = 500000  # number of training iterations
 batch_size = 256
 lr = 1e-4
 
 def main():
     # # Create model instance, move to device and train it
 
+    # Hadamard matrix 
+    k = 3  # so 2^k = 8
+    L = 3
     dim = 2**k
     transform_matrix = hadamard_matrix(dim,device,dtype=torch.float32)
+    
+    # Matrices
+    # A = torch.tensor([[1.0, 0.0, 2.0],
+    #               [0.0, 1.0 , 0.0],
+    #               [1.0, 0.0, 1.0]])
+    # B = torch.tensor([[0.0, 1.0 , 1.0],
+    #               [1.0, 0.0, 1.0],
+    #               [2.0, 0.0, 1.0]])
+    # transform_matrix = tensor_product([A,B])
+    # L = 2
+
+    dim = transform_matrix.shape[1]
     model = PowerLinearModel(dim,L)
     model.to(device)
     train_model(model, train_iterations, transform_matrix, batch_size, lr)
